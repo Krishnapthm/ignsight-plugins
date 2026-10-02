@@ -1,0 +1,9 @@
+{
+  "name": "ignsight",
+  "version": "0.1.0",
+  "description": "Pairs a coding agent with an Ignsight assessment and uploads redacted evidence of the attempt",
+  "author": {
+    "name": "Ignsight"
+  },
+  "hooks": "./hooks/claude-code.json"
+}

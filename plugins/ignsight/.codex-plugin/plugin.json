@@ -1,0 +1,19 @@
+{
+  "name": "ignsight",
+  "version": "0.1.0",
+  "description": "Pairs a coding agent with an Ignsight assessment and uploads redacted evidence of the attempt",
+  "author": {
+    "name": "Ignsight"
+  },
+  "hooks": "./hooks/codex.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Ignsight",
+    "shortDescription": "Capture coding-agent activity for an Ignsight assessment.",
+    "developerName": "Ignsight",
+    "category": "Productivity",
+    "capabilities": [
+      "Write"
+    ]
+  }
+}

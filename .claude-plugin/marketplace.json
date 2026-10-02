@@ -1,0 +1,17 @@
+{
+  "name": "ignsight",
+  "owner": {
+    "name": "Ignsight"
+  },
+  "metadata": {
+    "description": "Ignsight local coding-agent evidence capture plugins"
+  },
+  "plugins": [
+    {
+      "name": "ignsight",
+      "source": "./plugins/ignsight",
+      "description": "Pairs a coding agent with an Ignsight assessment and uploads redacted evidence of the attempt",
+      "version": "0.1.0"
+    }
+  ]
+}
