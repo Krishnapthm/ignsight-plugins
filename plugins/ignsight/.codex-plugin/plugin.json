@@ -1,6 +1,6 @@
 {
   "name": "ignsight",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pairs a coding agent with an Ignsight assessment and uploads redacted evidence of the attempt",
   "author": {
     "name": "Ignsight"

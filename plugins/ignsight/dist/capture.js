@@ -44,7 +44,7 @@ export async function captureState(pairing, timeoutMs, now = Date.now()) {
         return "expired";
     if (cached.state === "expired" || (cached.expires_at && Date.parse(cached.expires_at) <= now)) {
         await updateState(pairing.key, { state: "expired" });
-        spawnUploader(pairing);
+        await spawnUploader(pairing);
         return "expired";
     }
     if (cached.state === "active" && cached.checked_at && now - Date.parse(cached.checked_at) < ACTIVE_TTL_MS)
@@ -52,7 +52,7 @@ export async function captureState(pairing, timeoutMs, now = Date.now()) {
     try {
         const state = (await refreshState(pairing, timeoutMs)).state;
         if (state === "expired")
-            spawnUploader(pairing);
+            await spawnUploader(pairing);
         return state === "ended" ? "expired" : state;
     }
     catch {

@@ -128,7 +128,7 @@ function pathWords(words) {
 }
 // Split a script into simple commands of words, honoring quotes and backslash escapes.
 // The target of an output redirection is a write, not a read, and is dropped.
-function shellCommands(script) {
+export function shellCommands(script) {
     const commands = [[]];
     let word = null;
     let redirected = false;
@@ -176,7 +176,8 @@ export function isPatch(text) {
 function patchPaths(patch) {
     return [...patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm)].map((match) => match[1].trim());
 }
-function isSensitiveFile(path) {
+/** Credential files are excluded from tool content and usage transcript reads. */
+export function isSensitiveFile(path) {
     return sensitiveFile.test(sep === "/" ? path : path.replaceAll(sep, "/"));
 }
 function expandHome(path) {

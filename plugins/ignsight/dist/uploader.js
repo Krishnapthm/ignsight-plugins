@@ -4,17 +4,12 @@ import { join } from "node:path";
 import { setTimeout as sleepFor } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ApiError, uploadBatch } from "./api.js";
-import { CaptureBuffer } from "./buffer.js";
+import { CaptureBuffer, MAX_BATCH_EVENTS, MAX_BATCH_BYTES } from "./buffer.js";
+import { withFileLock } from "./file-lock.js";
 import { credentialFile, credentialFor, refreshState } from "./capture.js";
 import { deleteSecret } from "./keychain.js";
 import { PRODUCER } from "./version.js";
 import { pairingDirectory, readState, updateState } from "./workspace.js";
-// Sends a pairing's buffered events to POST /v1/attempts/{attempt_id}/events:batch.
-// Batches stay inside the API limits (500 events, 4 MiB). Transient failures
-// (network, 429, 5xx) back off and retry; the buffer is kept whenever an upload
-// does not complete, so nothing is lost while the API is unreachable.
-const MAX_BATCH_EVENTS = 500;
-const MAX_BATCH_BYTES = 3 * 1024 * 1024; // Headroom under the API's 4 MiB for the envelope.
 const UPLOAD_GRACE_MS = 120_000;
 /** Drain through upload grace at expiry, then retain only pairing and status metadata. */
 export async function flushPairing(pairing, options = {}) {
@@ -181,7 +176,7 @@ export async function uploadWithLock(pairing, options = {}) {
     const lock = join(pairingDirectory(pairing.key), "upload.pid");
     const buffer = new CaptureBuffer(pairingDirectory(pairing.key));
     for (;;) {
-        if (!await acquire(lock))
+        if (!await withFileLock(`${lock}.start`, () => acquire(lock)))
             return;
         let result;
         try {
@@ -197,7 +192,7 @@ export async function uploadWithLock(pairing, options = {}) {
 /** Serialize credential replacement with any uploader already draining this binding. */
 export async function replaceWithLock(pairing, action) {
     const lock = join(pairingDirectory(pairing.key), "upload.pid");
-    if (!await acquire(lock))
+    if (!await withFileLock(`${lock}.start`, () => acquire(lock)))
         throw new Error("An upload is still running. Retry pairing once it finishes.");
     try {
         await action();
@@ -217,7 +212,18 @@ async function acquire(lock) {
         catch (error) {
             if (!(error instanceof Error && "code" in error && error.code === "EEXIST"))
                 throw error;
-            const pid = Number(await readFile(lock, "utf8").catch(() => ""));
+            const owner = await readFile(lock, "utf8").catch(() => "");
+            const pid = Number(owner.split(":")[0]);
+            if (pid === process.pid && owner.endsWith(":starting")) {
+                const handle = await open(lock, "w", 0o600);
+                try {
+                    await handle.writeFile(String(process.pid));
+                }
+                finally {
+                    await handle.close();
+                }
+                return true;
+            }
             if (pid && alive(pid))
                 return false;
             await unlink(lock).catch(() => { }); // Left by a crashed uploader.
@@ -235,7 +241,26 @@ function alive(pid) {
     }
 }
 /** Start a detached uploader so the hook returns immediately. */
-export function spawnUploader(pairing) {
-    const child = spawn(process.execPath, [fileURLToPath(new URL("./upload.js", import.meta.url)), pairing.key], { detached: true, stdio: "ignore" });
-    child.unref();
+export async function spawnUploader(pairing) {
+    const lock = join(pairingDirectory(pairing.key), "upload.pid");
+    await withFileLock(`${lock}.start`, async () => {
+        if (!await acquire(lock))
+            return;
+        try {
+            const child = spawn(process.execPath, [fileURLToPath(new URL("./upload.js", import.meta.url)), pairing.key], { detached: true, stdio: "ignore" });
+            await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+            const handle = await open(lock, "w", 0o600);
+            try {
+                await handle.writeFile(`${child.pid}:starting`);
+            }
+            finally {
+                await handle.close();
+            }
+            child.unref();
+        }
+        catch (error) {
+            await unlink(lock).catch(() => { });
+            throw error;
+        }
+    });
 }
