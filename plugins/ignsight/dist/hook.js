@@ -3,6 +3,7 @@ import { parseHookInput as parseClaude } from "./claude-code/parse-hook.js";
 import { parseHookInput as parseCodex } from "./codex/parse-hook.js";
 import { CaptureBuffer } from "./buffer.js";
 import { captureState } from "./capture.js";
+import { connectToken, pairWorkspace } from "./pair.js";
 import { hookEvents } from "./trace/canonical.js";
 import { hostProducer } from "./trace/event.js";
 import { redact } from "./trace/redact.js";
@@ -11,9 +12,11 @@ import { OUT_OF_WORKSPACE, scopePayload } from "./trace/scope.js";
 import { spawnUploader } from "./uploader.js";
 import { findPairing, pairingDirectory } from "./workspace.js";
 // Hook entrypoint: `node dist/hook.js <codex|claude-code>` with the hook JSON on stdin.
-// Captures only inside a paired workspace while the API reports the attempt active,
-// buffers canonical events locally, and hands upload to a detached process.
-// Bounds the status check made while capture is not active, inside the 3s hook budget.
+// A connect prompt (`/ignsight:connect <code>` or `$ignsight:connect <code>`) pairs
+// the workspace and is blocked with the result. Otherwise it captures only inside
+// a paired workspace while the API reports the attempt active, buffers canonical
+// events locally, and hands upload to a detached process.
+// Bounds the status check made while capture is not active, inside the 3s capture hook budget.
 const STATUS_TIMEOUT_MS = 1_200;
 const fileFallbackWarning = {
     event_type: "capture.warning", actor: "system",
@@ -29,9 +32,23 @@ try {
         throw new Error("unknown host");
     const input = host === "codex" ? parseCodex(raw) : parseClaude(raw);
     const cwd = await realpath(input.cwd || process.cwd());
-    const pairing = await findPairing(cwd, hostProducer[host]);
+    const token = input.hookName === "UserPromptSubmit" ? connectToken(input.payload.prompt) : null;
+    const pairing = token ? null : await findPairing(cwd, hostProducer[host]);
+    if (token) {
+        // Pair here, outside the host's sandbox, and block the prompt: the candidate
+        // sees the result and the pairing code never reaches the model.
+        let reason;
+        try {
+            const { lines, warning } = await pairWorkspace(token, cwd, hostProducer[host]);
+            reason = [...lines, ...warning ? [warning] : []].join("\n");
+        }
+        catch (error) {
+            reason = `Ignsight pairing failed: ${error instanceof Error ? error.message : "unknown error"}`;
+        }
+        process.stdout.write(`${JSON.stringify({ decision: "block", reason })}\n`);
+    }
     // Fail closed: no pairing, or any state but active (before the slot opens, after it ends, or unknown).
-    if (pairing && await captureState(pairing, STATUS_TIMEOUT_MS) === "active") {
+    else if (pairing && await captureState(pairing, STATUS_TIMEOUT_MS) === "active") {
         const payload = await scopePayload(input.payload, cwd, pairing.root);
         const session = {
             client_session_id: input.sessionId, source: host, source_kind: "coding_agent", ...input.model && { model_name: input.model.slice(0, 255) },
@@ -74,5 +91,5 @@ try {
             await spawnUploader(pairing);
     }
 }
-catch { /* Observation must never interrupt the candidate or inject stdout into context. */ }
+catch { /* Observation must never interrupt the candidate or inject stdout into context; only a connect prompt gets a block decision. */ }
 process.exitCode = 0;

@@ -4,18 +4,21 @@ description: Pair this workspace with an Ignsight assessment using a pairing cod
 argument-hint: <pairing code>
 ---
 
-Pair the current directory with the candidate's Ignsight assessment attempt. Run
-exactly one command from the assignment workspace's root directory, passing the
-pairing code the candidate gave (it starts with `ignsight1_`): $ARGUMENTS
+The Ignsight plugin's prompt hook pairs the workspace as soon as the candidate
+submits `/ignsight:connect <code>` (Claude Code) or `$ignsight:connect <code>`
+(Codex), and blocks that prompt with the result. If you are reading this, the
+hook did not run, so pairing did not happen.
 
-Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` below with the installed plugin
-root. In Codex, use the directory that contains this skill's `skills/` folder.
+Do not run any pairing command yourself and never print, store or reuse the
+code: a coding agent's sandbox can block the pairing store after the
+single-use code is spent.
 
-```sh
-node "${CLAUDE_PLUGIN_ROOT}/dist/cli.js" pair "<pairing code>"
-```
+Tell the candidate, briefly:
 
-Report the command's output to the candidate verbatim and do nothing else. If
-it fails, show the error and suggest getting a fresh code from the candidate
-portal: codes are single use and expire after five minutes. Never print,
-store or reuse the code anywhere else.
+1. The Ignsight plugin's hooks did not run. In Codex, open `/hooks` and trust
+   the Ignsight hooks. In Claude Code, make sure the `ignsight` plugin is
+   enabled in `/plugin`.
+2. Start a new session in the assignment folder.
+3. Get a fresh pairing code from the candidate portal and submit it again as
+   `$ignsight:connect <code>` in Codex or `/ignsight:connect <code>` in Claude
+   Code. Codes are single use and expire after five minutes.

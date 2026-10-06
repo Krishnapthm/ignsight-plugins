@@ -2,6 +2,8 @@
 // separate API URL and code: `ignsight1_` + base64url(JSON {api, producer, code}).
 // The portal (apps/web) encodes it; the capture client and the extension decode it.
 // The code inside is single use and expires within five minutes.
+/** How a candidate pairs from each host: Claude Code skills use `/`, Codex skills `$`. */
+export const CONNECT_COMMANDS = "/ignsight:connect <code> in Claude Code or $ignsight:connect <code> in Codex";
 const PREFIX = "ignsight1_";
 const producers = new Set(["codex", "claude_code", "extension"]);
 /** Decode and validate a pairing token. Throws a candidate-readable error. */

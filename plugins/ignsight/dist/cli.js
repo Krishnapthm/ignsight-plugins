@@ -1,82 +1,66 @@
-import { mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { exchangeCode, ApiError } from "./api.js";
 import { CaptureBuffer } from "./buffer.js";
-import { credentialFile, refreshState } from "./capture.js";
-import { deleteSecret, storeSecret } from "./keychain.js";
-import { replaceWithLock, uploadWithLock } from "./uploader.js";
-import { parsePairingToken } from "./pairing-token.js";
-import { isInside, listPairings, pairingDirectory, pairingKey, readState, savePairing, updateState, workspaceRoot, } from "./workspace.js";
-// `cli.js pair <pairing code> [--root <workspace>]`: pair this workspace with an attempt.
-// `cli.js status [--root <workspace>] [--json]`: show the attempt, state, last upload and buffered events.
-const hostNames = { codex: "Codex", claude_code: "Claude Code" };
+import { refreshState } from "./capture.js";
+import { describeState, hostNames, pairWorkspace } from "./pair.js";
+import { CONNECT_COMMANDS } from "./pairing-token.js";
+import { uploadWithLock } from "./uploader.js";
+import { isInside, listPairings, pairingDirectory, readState } from "./workspace.js";
+// `cli.js pair <pairing code> [--root <workspace>]`: pair this workspace with an attempt from a terminal.
+//   Inside a coding agent, the UserPromptSubmit hook pairs instead (src/pair.ts).
+// `cli.js status [--root <workspace>] [--json] [--all]`: show the newest pairing per host, or every pairing with --all.
 async function main() {
     const [command, ...args] = process.argv.slice(2);
     const rootIndex = args.indexOf("--root");
     const rootOption = rootIndex === -1 ? undefined : args.splice(rootIndex, 2)[1];
     if (rootIndex !== -1 && !rootOption)
         throw new Error("--root needs a directory");
+    const directory = resolve(rootOption ?? process.cwd());
     if (command === "pair" && args.length === 1)
-        await pair(args[0], resolve(rootOption ?? process.cwd()));
-    else if (command === "status" && (args.length === 0 || (args.length === 1 && args[0] === "--json")))
-        await status(resolve(rootOption ?? process.cwd()), args.includes("--json"));
+        await pair(args[0], directory);
+    else if (command === "status" && args.every((arg) => arg === "--json" || arg === "--all"))
+        await status(directory, args.includes("--json"), args.includes("--all"));
     else
-        throw new Error("Usage: cli.js pair <pairing code> [--root <workspace>] | cli.js status [--root <workspace>] [--json]");
+        throw new Error("Usage: cli.js pair <pairing code> [--root <workspace>] | cli.js status [--root <workspace>] [--json] [--all]");
 }
 async function pair(token, directory) {
-    const { api, producer, code } = parsePairingToken(token);
-    if (producer === "extension")
-        throw new Error("This code is for the browser extension. Paste it into the extension popup instead.");
-    const root = await workspaceRoot(directory);
-    let exchange;
-    try {
-        exchange = await exchangeCode(api, producer, code);
-    }
-    catch (error) {
-        if (error instanceof ApiError && error.status === 401)
-            throw new Error("The pairing code was rejected: it expired, was already used, or the assessment has ended. Get a new code from the candidate portal.", { cause: error });
-        throw new Error(`Could not reach the assessment API at ${api}.`, { cause: error });
-    }
-    if (!exchange.attempt_id)
-        throw new Error("The API returned a credential without an attempt.");
-    const key = pairingKey(producer, root, exchange.attempt_id);
-    await mkdir(pairingDirectory(key), { recursive: true, mode: 0o700 });
-    const pairing = {
-        version: 1, key, root, producer, api_url: api, attempt_id: exchange.attempt_id,
-        credential_storage: "keychain", paired_at: new Date().toISOString(),
-    };
-    await replaceWithLock(pairing, async () => {
-        // Re-pairing the same binding starts a fresh local lifecycle.
-        await deleteSecret(key, credentialFile(pairing));
-        await rm(resolve(pairingDirectory(key), "sessions"), { recursive: true, force: true });
-        await rm(resolve(pairingDirectory(key), "state.json"), { force: true });
-        pairing.credential_storage = await storeSecret(key, exchange.credential, credentialFile(pairing));
-        await savePairing(pairing);
-        await updateState(key, { expires_at: exchange.expires_at });
-    });
-    const state = await refreshState(pairing).catch(() => null);
-    console.log(`Paired ${hostNames[producer]} in ${root} with attempt ${pairing.attempt_id}.`);
-    console.log(describeState(state?.state ?? null));
-    if (pairing.credential_storage === "file") {
-        console.error("Warning: no OS keychain was available, so the credential is stored in an owner-only file. The reviewer will see a capture warning.");
-    }
+    const { lines, warning } = await pairWorkspace(token, directory);
+    for (const line of lines)
+        console.log(line);
+    if (warning)
+        console.error(warning);
 }
-async function status(directory, json) {
-    const pairings = (await listPairings()).filter((pairing) => isInside(directory, pairing.root) || isInside(pairing.root, directory));
-    if (!pairings.length) {
+/** The newest pairing per host; older attempts are history, shown with --all. */
+function latestPerProducer(pairings) {
+    const newest = new Map();
+    for (const pairing of pairings)
+        if ((newest.get(pairing.producer)?.paired_at ?? "") < pairing.paired_at)
+            newest.set(pairing.producer, pairing);
+    return [...newest.values()];
+}
+async function status(directory, json, all) {
+    const matching = (await listPairings()).filter((pairing) => isInside(directory, pairing.root) || isInside(pairing.root, directory));
+    if (!matching.length) {
         if (json) {
             console.log("[]");
             return;
         }
-        console.log(`Not paired: ${directory}\nRun /ignsight:connect with a pairing code from the candidate portal in your assignment workspace.`);
+        console.log(`Not paired: ${directory}\nPair with ${CONNECT_COMMANDS}, using the pairing code from the candidate portal, in your assignment workspace.`);
         return;
     }
+    const pairings = all ? matching : latestPerProducer(matching);
     const reports = [];
     for (const pairing of pairings.sort((a, b) => b.paired_at.localeCompare(a.paired_at))) {
         let state = await refreshState(pairing).catch(() => readState(pairing.key));
-        if (state.state === "expired" || (state.state !== "ended" && state.expires_at && Date.parse(state.expires_at) <= Date.now())) {
-            await uploadWithLock(pairing);
-            state = await readState(pairing.key);
+        let refreshError = null;
+        try {
+            if (state.state === "expired" || (state.state !== "ended" && state.expires_at && Date.parse(state.expires_at) <= Date.now())) {
+                await uploadWithLock(pairing);
+                state = await readState(pairing.key);
+            }
+        }
+        catch (error) {
+            // A coding agent's sandbox may deny writes to the data directory; the cached state is still accurate to report.
+            refreshError = `could not finish ending the attempt here (${error instanceof Error ? error.message : "unknown error"}); the next hook or a terminal status will retry`;
         }
         const storage = pairing.credential_storage === "file" ? "file fallback warning: credential stored in an owner-only file" : "keychain";
         const report = {
@@ -85,7 +69,7 @@ async function status(directory, json) {
             last_successful_upload: state.last_upload_at,
             buffered_count: await new CaptureBuffer(pairingDirectory(pairing.key)).bufferedCount(),
             credential_storage: state.state === "ended" ? `removed (${storage})` : storage,
-            last_error: state.last_error, end_reason: state.end_reason,
+            last_error: refreshError ?? state.last_error, end_reason: state.end_reason,
             uploaded_events: state.uploaded_events, dropped_events: state.dropped_events,
         };
         reports.push(report);
@@ -103,18 +87,11 @@ async function status(directory, json) {
                 ...state.state === "ended" ? [`  End reason: ${state.end_reason}`, `  Uploaded events: ${state.uploaded_events}`, `  Dropped events: ${state.dropped_events}`] : [],
             ].join("\n"));
     }
+    const hidden = matching.length - pairings.length;
+    if (!json && hidden)
+        console.log(`${hidden} older pairing${hidden === 1 ? "" : "s"} hidden; run status --all to list them.`);
     if (json)
         console.log(JSON.stringify(reports, null, 2));
-}
-function describeState(state, endedAt = null) {
-    switch (state) {
-        case "active": return "capturing";
-        case "waiting-for-start": return "waiting for the test to start";
-        case "paired": return "paired";
-        case "expired":
-        case "ended": return `ended at ${endedAt ?? "unknown time"}`;
-        default: return "unknown: the API could not be reached. Nothing is captured until it reports the attempt active.";
-    }
 }
 try {
     await main();

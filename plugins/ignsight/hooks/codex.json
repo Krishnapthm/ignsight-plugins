@@ -28,7 +28,7 @@
           {
             "type": "command",
             "command": "node \"$PLUGIN_ROOT/dist/hook.js\" codex",
-            "timeout": 3
+            "timeout": 60
           }
         ]
       }
