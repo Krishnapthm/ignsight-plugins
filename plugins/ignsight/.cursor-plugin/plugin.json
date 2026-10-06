@@ -1,0 +1,14 @@
+{
+  "name": "ignsight",
+  "displayName": "Ignsight",
+  "version": "0.1.3",
+  "description": "Capture redacted assessment evidence from a coding agent",
+  "author": {
+    "name": "Ignsight"
+  },
+  "hooks": "./hooks/cursor.json",
+  "skills": "./skills/",
+  "minClientVersions": {
+    "cursor": "3.23.12"
+  }
+}

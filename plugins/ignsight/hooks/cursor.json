@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/dist/hook.js\" cursor",
+        "timeout": 3
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/dist/hook.js\" cursor",
+        "timeout": 3
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/dist/hook.js\" cursor",
+        "timeout": 60
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/dist/hook.js\" cursor",
+        "timeout": 3
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/dist/hook.js\" cursor",
+        "timeout": 3
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/dist/hook.js\" cursor",
+        "timeout": 3
+      }
+    ],
+    "stop": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/dist/hook.js\" cursor",
+        "timeout": 3
+      }
+    ],
+    "afterMCPExecution": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/dist/hook.js\" cursor",
+        "timeout": 3
+      }
+    ]
+  }
+}

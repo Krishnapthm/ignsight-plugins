@@ -2,17 +2,14 @@ import { relative, resolve, sep } from "node:path";
 import { isInside } from "../workspace.js";
 import { isObject } from "./event.js";
 import { isSensitiveName, REDACTED, redactString, TRUNCATED_SUFFIX } from "./redact.js";
+import { extensionEvents } from "./extensions.js";
 import { testCounts, testRunner } from "./tests.js";
 import { isPatch, OUT_OF_WORKSPACE, resolveReal, SENSITIVE_FILE } from "./scope.js";
-// Host tool names that run a shell command, read a file, or change files.
-const shellTools = new Set(["Bash", "shell", "exec_command", "local_shell"]);
-const readTools = new Set(["Read"]);
-const writeTools = new Set(["Write"]);
-const editTools = new Set(["Edit", "MultiEdit"]);
-const patchTools = new Set(["apply_patch"]);
+const HOST_STARTED_PROMPT = "A prompt was classified as started by the coding agent itself, not the candidate; its text was not recorded.";
 /** Canonical events for a scoped hook. Hooks without a source-neutral meaning yield none. */
-export async function hookEvents(input, root, cwd, options = {}) {
-    const context = { input, root, cwd, testStart: options.testStart };
+export async function hookEvents(input, agent, root, cwd, options = {}) {
+    const observedAt = options.observedAt ?? new Date();
+    const context = { input, agent, root, cwd, testStart: options.testStart };
     const p = input.payload;
     const vendor = vendorDetail(input);
     let drafts;
@@ -24,7 +21,12 @@ export async function hookEvents(input, root, cwd, options = {}) {
             drafts = [{ event_type: "session.ended", actor: "system", payload: { reason: text(p.reason), vendor } }];
             break;
         case "UserPromptSubmit":
-            drafts = [{ event_type: "message.candidate", actor: "candidate", payload: { text: String(p.prompt), vendor } }];
+            // A turn the agent started itself is not something the candidate typed; its tool calls are still captured.
+            // A marker without the prompt text keeps the classification visible, since agent
+            // content (task results, paths) must not leak and a forged wrapper would otherwise vanish.
+            drafts = input.promptOrigin === "candidate"
+                ? [{ event_type: "message.candidate", actor: "candidate", payload: { text: String(p.prompt), vendor } }]
+                : [{ event_type: "capture.warning", actor: "system", payload: { code: "host_started_prompt", message: HOST_STARTED_PROMPT, vendor } }];
             break;
         case "Stop":
             drafts = typeof p.last_assistant_message === "string"
@@ -45,21 +47,36 @@ export async function hookEvents(input, root, cwd, options = {}) {
             drafts = await toolStart(context);
             break;
         case "PostToolUse":
-        case "PostToolUseFailure":
-            drafts = await toolEnd(context, input.hookName === "PostToolUseFailure");
+        case "PostToolUseFailure": {
+            const starts = input.toolStartIncluded ? await toolStart(context) : [];
+            const ends = await toolEnd(context, input.hookName === "PostToolUseFailure");
+            const duration = p.duration_ms;
+            if (input.toolStartIncluded && typeof duration === "number" && Number.isFinite(duration) && duration >= 0) {
+                const completion = observedAt;
+                const start = new Date(completion.getTime() - duration);
+                if (Number.isFinite(start.getTime())) {
+                    for (const draft of starts)
+                        draft.occurred_at = start.toISOString();
+                    for (const draft of ends)
+                        draft.occurred_at = completion.toISOString();
+                }
+            }
+            drafts = [...starts, ...ends];
             break;
+        }
         default:
             drafts = [];
     }
-    return drafts.map(finalize);
+    return [...drafts, ...extensionEvents(input.extensions ?? [])].map(finalize);
 }
-async function toolStart({ input, root, cwd }) {
+async function toolStart({ input, agent, root, cwd }) {
     const p = input.payload;
     const name = toolName(p);
+    const kind = agent.toolKind(name);
     const id = toolCallId(p);
     const toolInput = isObject(p.tool_input) ? p.tool_input : {};
     const vendor = vendorDetail(input, name);
-    if (shellTools.has(name)) {
+    if (kind === "shell") {
         const workdir = typeof toolInput.workdir === "string" ? resolve(cwd, toolInput.workdir) : cwd;
         const command = commandText(toolInput.command ?? toolInput.cmd);
         const runner = testRunner(command);
@@ -68,79 +85,56 @@ async function toolStart({ input, root, cwd }) {
             drafts.push({ event_type: "test.run", actor: "agent", payload: { command, runner, tool_call_id: id, vendor } });
         return drafts;
     }
-    if (readTools.has(name)) {
+    if (kind === "read") {
         return [{ event_type: "file.read", actor: "agent", payload: { path: await workspacePath(root, cwd, toolInput.file_path), tool_call_id: id, vendor } }];
     }
     // File changes are recorded from the result, which says what actually changed.
-    if (writeTools.has(name) || editTools.has(name) || patchTools.has(name))
+    if (kind === "write" || kind === "edit" || kind === "patch")
         return [];
     return [{ event_type: "tool.call", actor: "agent", payload: { tool_call_id: id, tool_name: name, input: toolInputObject(p.tool_input), vendor } }];
 }
-async function toolEnd({ input, root, cwd, testStart }, failed) {
+async function toolEnd({ input, agent, root, cwd, testStart }, failed) {
     const p = input.payload;
     const name = toolName(p);
+    const kind = agent.toolKind(name);
     const id = toolCallId(p);
     const toolInput = isObject(p.tool_input) ? p.tool_input : {};
     const response = p.tool_response;
     const vendor = vendorDetail(input, name);
-    if (shellTools.has(name)) {
-        const result = shellResponse(response);
-        const exitCode = result.exit_code ?? result.exitCode;
-        let code = Number.isSafeInteger(exitCode) ? exitCode : undefined;
-        let status = code === undefined ? "errored" : code === 0 ? "passed" : "failed";
-        if (input.source === "claude-code") {
-            if (failed) {
-                // Claude reports nonzero Bash exits in the first line of the failure hook.
-                const firstLine = text(p.error)?.slice(0, 1024).split("\n", 1)[0] ?? "";
-                const failure = /^Exit code (\d{1,15})(?:\s|$)/.exec(firstLine);
-                code = failure ? Number(failure[1]) : undefined;
-                status = failure ? "failed" : "errored";
-            }
-            else if (result.interrupted === true) {
-                code = undefined;
-                status = "errored";
-            }
-            else if (code === undefined) {
-                code = 0;
-                status = "passed";
-            }
-        }
+    if (kind === "shell") {
+        const outcome = agent.shellOutcome({ response, error: p.error, failed });
         const drafts = [{ event_type: "shell.result", actor: "tool", payload: {
-                    tool_call_id: id,
-                    exit_code: code,
-                    stdout: text(result.stdout ?? result.output), stderr: text(result.stderr), vendor,
+                    tool_call_id: id, exit_code: outcome.exitCode, stdout: outcome.stdout, stderr: outcome.stderr, vendor,
                 } }];
         const runner = testStart?.runner ?? testRunner(commandText(toolInput.command ?? toolInput.cmd));
         if (runner) {
-            const duration = p.duration_ms ?? result.duration_ms;
+            const duration = p.duration_ms ?? outcome.durationMs;
             const durationMs = typeof duration === "number" && Number.isFinite(duration) && duration >= 0 ? duration
                 : testStart ? Math.max(0, Date.now() - testStart.started_at) : undefined;
-            const output = input.source === "claude-code" && failed
-                ? [text(p.error)] : [text(result.stdout ?? result.output), text(result.stderr)];
             drafts.push({ event_type: "test.result", actor: "tool", payload: {
-                    runner, tool_call_id: id, status,
-                    exit_code: code, duration_ms: durationMs,
-                    ...testCounts(output.map((value) => value?.slice(0, 64 * 1024) ?? "").join("\n")), vendor,
+                    runner, tool_call_id: id, status: outcome.status,
+                    exit_code: outcome.exitCode, duration_ms: durationMs,
+                    ...testCounts(outcome.testOutput.map((value) => value?.slice(0, 64 * 1024) ?? "").join("\n")), vendor,
                 } });
         }
         if (failed)
             drafts[0] = { event_type: "tool.result", actor: "tool", payload: { tool_call_id: id, tool_name: name, status: "failed", output: p.error, vendor } };
         return drafts;
     }
-    if (!failed && readTools.has(name))
+    if (!failed && kind === "read")
         return []; // The read was recorded from PreToolUse; its content is the repository file.
-    if (!failed && writeTools.has(name)) {
+    if (!failed && kind === "write") {
         const created = isObject(response) && response.type === "create";
         return [{ event_type: "file.write", actor: "agent", payload: { path: await workspacePath(root, cwd, toolInput.file_path), change_type: created ? "created" : "modified", tool_call_id: id, vendor } }];
     }
-    if (!failed && editTools.has(name)) {
+    if (!failed && kind === "edit") {
         const patch = structuredPatch(isObject(response) ? response.structuredPatch : undefined);
         return [{ event_type: "file.patch", actor: "agent", payload: {
                     path: await workspacePath(root, cwd, toolInput.file_path), change_type: "modified",
                     ...patch && { patch: patch.text, additions: patch.additions, deletions: patch.deletions }, tool_call_id: id, vendor,
                 } }];
     }
-    if (!failed && patchTools.has(name)) {
+    if (!failed && kind === "patch") {
         const patch = typeof p.tool_input === "string" ? p.tool_input : Object.values(toolInput).find((value) => typeof value === "string" && (isPatch(value) || value === OUT_OF_WORKSPACE || value === SENSITIVE_FILE));
         // A scoped-out patch keeps only its marker: neither its paths nor its content are recorded.
         if (typeof patch !== "string" || !isPatch(patch)) {
@@ -157,7 +151,7 @@ async function toolEnd({ input, root, cwd, testStart }, failed) {
 }
 /** Redact every string, turn scope markers into omissions, and attach the contract's redaction markers. */
 function finalize(draft) {
-    const markers = [];
+    const markers = [...draft.payload.redactions ?? []];
     const payload = clean(draft.payload, "", false, markers);
     if (markers.length)
         payload.redactions = markers;
@@ -215,26 +209,11 @@ function vendorDetail(input, toolName) {
         .filter(([, value]) => value != null));
     return Object.keys(vendor).length ? vendor : undefined;
 }
-/** Codex local shells may return the model-facing terminal envelope rather than an object. */
-function shellResponse(response) {
-    if (isObject(response))
-        return response;
-    if (typeof response !== "string")
-        return { stdout: response };
-    const header = response.slice(0, 1024);
-    const exit = /^Process exited with code (-?\d{1,10})$/m.exec(header);
-    const wall = /^Wall time: (\d{1,10}(?:\.\d{1,6})?) seconds$/m.exec(header);
-    return {
-        stdout: response,
-        ...(exit && { exit_code: Number(exit[1]) }),
-        ...(wall && { duration_ms: Number(wall[1]) * 1000 }),
-    };
-}
 function toolName(payload) {
     return typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name.slice(0, 255) : "unknown";
 }
 function toolCallId(payload) {
-    const id = payload.tool_use_id ?? payload.call_id;
+    const id = payload.tool_use_id;
     return typeof id === "string" && id ? id.slice(0, 255) : "unknown";
 }
 function toolInputObject(value) {
@@ -250,7 +229,7 @@ function commandText(command) {
 function text(value) {
     return typeof value === "string" ? value : undefined;
 }
-// Claude Code reports Edit results as structured hunks; render them as a unified diff.
+// Edit results may carry structured hunks (`structuredPatch`); render them as a unified diff.
 function structuredPatch(value) {
     if (!Array.isArray(value) || !value.length)
         return null;
@@ -262,7 +241,7 @@ function structuredPatch(value) {
         deletions: lines.filter((line) => line.startsWith("-")).length,
     };
 }
-// Codex apply_patch: one `*** Add|Update|Delete File:` section per file.
+// An apply_patch envelope: one `*** Add|Update|Delete File:` section per file.
 function patchSections(patch) {
     const sections = [];
     const changes = { Add: "created", Update: "modified", Delete: "deleted" };

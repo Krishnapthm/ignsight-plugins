@@ -20,7 +20,10 @@ const MAX_PATH_CHECKS = 1_024;
 // .env*, *.env, SSH keys, *.pem, *.key, auth rc files, and cloud credential stores.
 const sensitiveFile = /(?:^|\/)(?:\.env(?:\.[^/]*)?|[^/]+\.env|id_(?:rsa|dsa|ecdsa|ed25519)[^/]*|[^/]+\.(?:pem|key)|\.npmrc|\.netrc|_netrc|\.pgpass|\.git-credentials|\.aws\/(?:credentials|sso\/cache\/[^/]+)|\.docker\/config\.json|\.kube\/config|\.config\/gcloud\/.+|\.azure\/.+)$/;
 /** Return the hook payload with tool content removed when it touches files outside `root` or credential files. */
-export async function scopePayload(payload, cwd, root) {
+export async function scopePayload(payload, cwd, root, withholdToolContent = false) {
+    // Name-only attribution is allowed; neither a skill read's command/path nor its output is evidence.
+    if (withholdToolContent)
+        return { ...payload, tool_input: OUT_OF_WORKSPACE, tool_response: OUT_OF_WORKSPACE, error: OUT_OF_WORKSPACE };
     if (!("tool_input" in payload) && !("tool_response" in payload))
         return payload;
     const input = isObject(payload.tool_input) ? payload.tool_input : {};

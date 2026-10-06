@@ -1,7 +1,6 @@
 ---
 name: connect
 description: Pair this workspace with an Ignsight assessment using a pairing code from the candidate portal.
-argument-hint: <pairing code>
 ---
 
 The Ignsight plugin's prompt hook pairs the workspace as soon as the candidate
@@ -22,3 +21,7 @@ Tell the candidate, briefly:
 3. Get a fresh pairing code from the candidate portal and submit it again as
    `$ignsight:connect <code>` in Codex or `/ignsight:connect <code>` in Claude
    Code. Codes are single use and expire after five minutes.
+
+In Cursor, use /connect. If pairing hooks did not run, enable Ignsight
+in /plugin, reload the window, and get a fresh code. After pairing, start
+a new chat immediately: blocked prompts remain in chat history.

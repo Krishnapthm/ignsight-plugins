@@ -109,6 +109,17 @@
           }
         ]
       }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.js\" claude-code",
+            "timeout": 3
+          }
+        ]
+      }
     ]
   }
 }

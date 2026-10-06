@@ -51,7 +51,7 @@ export class CaptureBuffer {
             for (const draft of all) {
                 if (full)
                     break;
-                let event = { ...draft, sequence: record.last_sequence + events.length + 1, occurred_at: now.toISOString() };
+                let event = { ...draft, sequence: record.last_sequence + events.length + 1, occurred_at: draft.occurred_at ?? now.toISOString() };
                 let line = `${JSON.stringify(event)}\n`;
                 if (Buffer.byteLength(line) > MAX_LINE_BYTES) {
                     event = { sequence: event.sequence, occurred_at: event.occurred_at, event_type: "capture.warning", actor: "system", payload: { code: "event_too_large", message: "An event exceeded the local line limit and was dropped." } };

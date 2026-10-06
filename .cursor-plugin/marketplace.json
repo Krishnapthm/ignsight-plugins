@@ -1,0 +1,13 @@
+{
+  "name": "ignsight",
+  "owner": {
+    "name": "Ignsight"
+  },
+  "plugins": [
+    {
+      "name": "ignsight",
+      "source": "./plugins/ignsight",
+      "version": "0.1.3"
+    }
+  ]
+}

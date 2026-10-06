@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
-import { CONNECT_COMMANDS } from "./pairing-token.js";
+import { connectCommands } from "./agents/index.js";
 /** The OS user data directory for Ignsight state. */
 export function dataDirectory() {
     const home = homedir();
@@ -36,8 +36,8 @@ export async function workspaceRoot(directory) {
 }
 /**
  * Prove the data directory is writable before a single-use pairing code is
- * spent. A coding agent's sandbox (Codex workspace-write) denies writes there
- * to commands the model runs; hooks run outside it.
+ * spent. A coding agent's sandbox may deny writes there to commands the model
+ * runs; hooks run outside it.
  */
 export async function assertWritableDataDirectory() {
     const probe = join(pairingsDirectory(), `.probe-${process.pid}`);
@@ -49,7 +49,7 @@ export async function assertWritableDataDirectory() {
     }
     catch (error) {
         const code = error instanceof Error && "code" in error ? ` (${String(error.code)})` : "";
-        throw new Error(`Ignsight cannot write its pairing data in ${dataDirectory()}${code}, so the pairing code was not used. If a coding agent ran \`cli.js pair\` inside its sandbox, pair with ${CONNECT_COMMANDS} instead, or run it from a terminal.`, { cause: error });
+        throw new Error(`Ignsight cannot write its pairing data in ${dataDirectory()}${code}, so the pairing code was not used. If a coding agent ran \`cli.js pair\` inside its sandbox, pair with ${connectCommands()} instead, or run it from a terminal.`, { cause: error });
     }
 }
 /** Create the owner-only pairing directory and write its record. */

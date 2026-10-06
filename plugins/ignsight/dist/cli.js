@@ -1,13 +1,13 @@
 import { resolve } from "node:path";
 import { CaptureBuffer } from "./buffer.js";
 import { refreshState } from "./capture.js";
-import { describeState, hostNames, pairWorkspace } from "./pair.js";
-import { CONNECT_COMMANDS } from "./pairing-token.js";
+import { connectCommands, displayName } from "./agents/index.js";
+import { describeState, pairWorkspace } from "./pair.js";
 import { uploadWithLock } from "./uploader.js";
 import { isInside, listPairings, pairingDirectory, readState } from "./workspace.js";
 // `cli.js pair <pairing code> [--root <workspace>]`: pair this workspace with an attempt from a terminal.
 //   Inside a coding agent, the UserPromptSubmit hook pairs instead (src/pair.ts).
-// `cli.js status [--root <workspace>] [--json] [--all]`: show the newest pairing per host, or every pairing with --all.
+// `cli.js status [--root <workspace>] [--json] [--all]`: show the newest pairing per agent, or every pairing with --all.
 async function main() {
     const [command, ...args] = process.argv.slice(2);
     const rootIndex = args.indexOf("--root");
@@ -29,7 +29,7 @@ async function pair(token, directory) {
     if (warning)
         console.error(warning);
 }
-/** The newest pairing per host; older attempts are history, shown with --all. */
+/** The newest pairing per coding agent; older attempts are history, shown with --all. */
 function latestPerProducer(pairings) {
     const newest = new Map();
     for (const pairing of pairings)
@@ -44,7 +44,7 @@ async function status(directory, json, all) {
             console.log("[]");
             return;
         }
-        console.log(`Not paired: ${directory}\nPair with ${CONNECT_COMMANDS}, using the pairing code from the candidate portal, in your assignment workspace.`);
+        console.log(`Not paired: ${directory}\nPair with ${connectCommands()}, using the pairing code from the candidate portal, in your assignment workspace.`);
         return;
     }
     const pairings = all ? matching : latestPerProducer(matching);
@@ -75,7 +75,7 @@ async function status(directory, json, all) {
         reports.push(report);
         if (!json)
             console.log([
-                `Producer: ${hostNames[pairing.producer]}`,
+                `Producer: ${displayName(pairing.producer)}`,
                 `  Workspace root: ${report.workspace_root}`,
                 `  Attempt: ${report.attempt_id}`,
                 `  State: ${report.state}`,
